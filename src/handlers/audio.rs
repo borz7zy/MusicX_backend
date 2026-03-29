@@ -38,6 +38,10 @@ struct AudioDeleted {
     object_key: String,
 }
 
+#[derive(serde::Deserialize)]
+pub struct StreamQuery {
+    pub token: Option<String>,
+}
 
 pub async fn upload(
     State(state): State<AppState>,
@@ -147,8 +151,17 @@ pub async fn stream_url(
     State(state): State<AppState>,
     claims: Option<Extension<Claims>>,
     Path(audio_id): Path<Uuid>,
+    Query(query): Query<StreamQuery>,
     req_headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+
+    let user_id = if let Some(token) = query.token {
+        let token_data = state.oauth.validate_token(&token)?;
+        Some(token_data.claims.sub)
+    } else {
+        claims.map(|Extension(c)| c.sub)
+    };
+
     let audio: AudioRow = sqlx::query_as::<_, AudioRow>(
         "SELECT object_key, owner_id, is_public FROM audios WHERE id = $1"
     )
@@ -160,8 +173,6 @@ pub async fn stream_url(
         ApiError::InternalError
     })?
     .ok_or(ApiError::NotFound)?;
-
-    let user_id = claims.map(|Extension(c)| c.sub);
 
     if !audio.is_public {
         match user_id {
