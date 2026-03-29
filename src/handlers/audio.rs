@@ -122,7 +122,7 @@ pub async fn my_list(
 
     let mut collected: Vec<AudioWithMeta> = sqlx::query_as::<_, AudioWithMeta>(
         r#"SELECT a.id, a.owner_id, a.title, a.description, a.filename,
-        a.size_bytes, a.duration_ms, a.is_public, a.created_at, false as "is_owned!"
+        a.size_bytes, a.duration_ms, a.is_public, a.created_at, false as is_owned
         FROM audios a
         JOIN audio_collections ac ON ac.audio_id = a.id
         WHERE ac.user_id = $1 ORDER BY a.created_at DESC"#
@@ -228,7 +228,7 @@ pub async fn search(
         SELECT
             id, owner_id, title, description, filename,
             size_bytes, duration_ms, is_public, created_at,
-            true AS "is_owned!"
+            true AS is_owned
         FROM audios
         WHERE is_public = true
           AND to_tsvector('simple', title) @@ plainto_tsquery('simple', $1)
