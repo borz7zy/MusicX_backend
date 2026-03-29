@@ -196,7 +196,7 @@ pub async fn stream_url(
         .status(status)
         .header(header::CONTENT_TYPE, &stream.content_type)
         .header(header::ACCEPT_RANGES, "bytes")
-        .header(header::CACHE_CONTROL, "private, no-store");
+        .header(header::CACHE_CONTROL, "private, max-age=0, must-revalidate");
 
     if let Some(len) = stream.content_length {
         builder = builder.header(header::CONTENT_LENGTH, len);
