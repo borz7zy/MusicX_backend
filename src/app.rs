@@ -20,13 +20,13 @@ pub async fn create_app() -> Router {
         .route("/auth/register", post(auth_handler::register))
         .route("/auth/token", post(auth_handler::token))
         .route("/auth/refresh", post(auth_handler::refresh))
+        .route("/audio/{id}/stream", get(audio::stream_url).head(audio::stream_url))
         .route("/audio/search", get(audio::search));
 
     let protected =Router::new()
         .route("/users", post(users::create_user))
         .route("/audio", post(audio::upload))
         .route("/audio", get(audio::my_list))
-        .route("/audio/{id}/stream", get(audio::stream_url).head(audio::stream_url))
         .route("/audio/{id}/privacy", patch(audio::update_privacy))
         .route("/audio/{id}/collect", post(audio::add_to_collection))
         .route("/audio/{id}/collect", delete(audio::remove_from_collection))

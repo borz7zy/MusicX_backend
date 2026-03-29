@@ -49,7 +49,10 @@ pub async fn upload(
     let mut filename = String::from("audio");
     let mut content_type = String::from("audio/mpeg");
 
-    while let Some(field) = multipart.next_field().await.map_err(|_| ApiError::InvalidInput("Invalid multipart".into()))? {
+    while let Some(field) = multipart.next_field().await.map_err(|e|{ 
+        eprintln!("Error reading multipart field: {:?}", e);
+        ApiError::InvalidInput("Invalid multipart".into())
+    })? {
         if field.name() == Some("file") {
             filename = field
                 .file_name()
@@ -267,7 +270,10 @@ pub async fn update_privacy(
     .bind(&claims.sub)
     .execute(&state.db)
     .await
-    .map_err(|_| ApiError::InternalError)?
+    .map_err(|e| {
+        eprintln!("Error updating audio privacy: {:?}", e);
+        ApiError::InternalError
+    })?
     .rows_affected();
 
     if rows == 0 {
@@ -288,7 +294,10 @@ pub async fn add_to_collection(
     .bind(audio_id)
     .fetch_optional(&state.db)
     .await
-    .map_err(|_| ApiError::InternalError)?
+    .map_err(|e| {
+        eprintln!("Error fetching audio: {:?}", e);
+        ApiError::InternalError
+    })?
     .ok_or(ApiError::NotFound)?;
 
     if audio.owner_id == claims.sub {
@@ -330,7 +339,10 @@ pub async fn remove_from_collection(
     .bind(audio_id)
     .execute(&state.db)
     .await
-    .map_err(|_| ApiError::InternalError)?;
+    .map_err(|e| {
+        eprintln!("Error removing audio from collection: {:?}", e);
+        ApiError::InternalError
+    })?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -347,7 +359,10 @@ pub async fn delete(
     .bind(&claims.sub)
     .fetch_optional(&state.db)
     .await
-    .map_err(|_| ApiError::InternalError)?
+    .map_err(|e| {
+        eprintln!("Error deleting audio: {:?}", e);
+        ApiError::InternalError
+    })?
     .ok_or(ApiError::NotFound)?;
 
     storage::delete_audio(&state.minio_client, &audio.object_key).await?;
