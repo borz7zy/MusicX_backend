@@ -145,47 +145,57 @@ pub async fn my_list(
 
 pub async fn stream_url(
     State(state): State<AppState>,
-    Extension(claims): Extension<Claims>,
+    claims: Option<Extension<Claims>>,
     Path(audio_id): Path<Uuid>,
     req_headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let audio: AudioRow = sqlx::query_as::<_, AudioRow>("SELECT object_key, owner_id, is_public FROM audios WHERE id = $1")
-        .bind(audio_id)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| {
-            eprintln!("Error fetching audio: {:?}", e);
-            ApiError::InternalError
-        })?
-        .ok_or(ApiError::NotFound)?;
+    let audio: AudioRow = sqlx::query_as::<_, AudioRow>(
+        "SELECT object_key, owner_id, is_public FROM audios WHERE id = $1"
+    )
+    .bind(audio_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| {
+        eprintln!("Error fetching audio: {:?}", e);
+        ApiError::InternalError
+    })?
+    .ok_or(ApiError::NotFound)?;
 
-    if audio.owner_id != claims.sub && !audio.is_public {
-        let in_collection: bool = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM audio_collections WHERE user_id = $1 AND audio_id = $2)"
-        )
-        .bind(&claims.sub)
-        .bind(audio_id)
-        .fetch_one(&state.db)
-        .await
-        .map_err(|e| {
-            eprintln!("Error checking audio collection: {:?}", e);
-            ApiError::InternalError
-        })?;
+    let user_id = claims.map(|Extension(c)| c.sub);
 
-        if !in_collection {
-            return Err(ApiError::Forbidden);
+    if !audio.is_public {
+        match user_id {
+            Some(uid) => {
+                if uid != audio.owner_id {
+                    let in_collection: bool = sqlx::query_scalar::<_, bool>(
+                        "SELECT EXISTS(SELECT 1 FROM audio_collections WHERE user_id = $1 AND audio_id = $2)"
+                    )
+                    .bind(uid)
+                    .bind(audio_id)
+                    .fetch_one(&state.db)
+                    .await
+                    .map_err(|e| {
+                        eprintln!("Error checking audio collection: {:?}", e);
+                        ApiError::InternalError
+                    })?;
+
+                    if !in_collection {
+                        return Err(ApiError::Forbidden);
+                    }
+                }
+            }
+            None => return Err(ApiError::Forbidden),
         }
     }
 
     let range = req_headers
         .get(header::RANGE)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+        .and_then(|v| v.to_str().ok());
 
     let stream = storage::get_audio_stream(
         &state.minio_client,
         &audio.object_key,
-        range.as_deref(),
+        range,
     )
     .await?;
 
@@ -197,7 +207,7 @@ pub async fn stream_url(
 
     let mut builder = Response::builder()
         .status(status)
-        .header(header::CONTENT_TYPE, &stream.content_type)
+        .header(header::CONTENT_TYPE, stream.content_type)
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::CACHE_CONTROL, "private, max-age=0, must-revalidate");
 
@@ -209,11 +219,12 @@ pub async fn stream_url(
         builder = builder.header(header::CONTENT_RANGE, cr);
     }
 
-    let async_read = stream.body.into_async_read();
-    let body = Body::from_stream(ReaderStream::new(async_read));
+    let body = Body::from_stream(
+        ReaderStream::new(stream.body.into_async_read())
+    );
 
     builder.body(body).map_err(|e| {
-        eprintln!("Error building stream response: {:?}", e);
+        eprintln!("Error building response: {:?}", e);
         ApiError::InternalError
     })
 }
