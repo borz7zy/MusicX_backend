@@ -79,7 +79,7 @@ pub async fn get_audio_stream(
         body: resp.body,
         content_type: resp
             .content_type
-            .unwrap_or_else(|| "application/octet-stream".to_string()),
+            .unwrap_or_else(|| "audio/mpeg".to_string()),
         content_length: resp.content_length,
         content_range: resp.content_range,
     })
