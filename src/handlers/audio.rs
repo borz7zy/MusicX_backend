@@ -20,6 +20,25 @@ use crate::{
 };
 use tokio_util::io::ReaderStream;
 
+#[derive(sqlx::FromRow)]
+struct AudioRow {
+    object_key: String,
+    owner_id: String,
+    is_public: bool,
+}
+
+#[derive(sqlx::FromRow)]
+struct AudioCheck {
+    owner_id: String,
+    is_public: bool,
+}
+
+#[derive(sqlx::FromRow)]
+struct AudioDeleted {
+    object_key: String,
+}
+
+
 pub async fn upload(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
@@ -60,25 +79,23 @@ pub async fn upload(
 
     storage::upload_audio(&state.minio_client, &object_key, data, &content_type).await?;
 
-    sqlx::query!(
-        r#"
-        INSERT INTO audios (id, owner_id, title, description, filename, object_key, size_bytes)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        "#,
-        audio_id,
-        claims.sub,
-        query.title,
-        query.description,
-        filename,
-        object_key,
-        size_bytes,
+    sqlx::query(
+        "INSERT INTO audios (id, owner_id, title, description, filename, object_key, size_bytes) 
+        VALUES ($1, $2, $3, $4, $5, $6, $7)"
     )
-    .execute(&state.db)
-    .await
-    .map_err(|e| {
-        eprintln!("Error inserting audio into database: {:?}", e);
-        ApiError::InternalError
-    })?;
+        .bind(&audio_id)
+        .bind(&claims.sub)
+        .bind(&query.title)
+        .bind(&query.description)
+        .bind(&filename)
+        .bind(&object_key)
+        .bind(size_bytes)
+        .execute(&state.db)
+        .await
+        .map_err(|e| {
+            eprintln!("Error inserting audio into database: {:?}", e);
+            ApiError::InternalError
+        })?;
 
     Ok((
         StatusCode::CREATED,
@@ -90,13 +107,12 @@ pub async fn my_list(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
 ) -> Result<Json<AudioListResponse>, ApiError> {
-    let mut items: Vec<AudioWithMeta> = sqlx::query_as!(
-        AudioWithMeta,
+    let mut items: Vec<AudioWithMeta> = sqlx::query_as::<_, AudioWithMeta>(
         r#"SELECT id, owner_id, title, description, filename,
-           size_bytes, duration_ms, is_public, created_at, true as "is_owned!"
-           FROM audios WHERE owner_id = $1 ORDER BY created_at DESC"#,
-        claims.sub,
+        size_bytes, duration_ms, is_public, created_at, true as is_owned
+        FROM audios WHERE owner_id = $1 ORDER BY created_at DESC"#
     )
+    .bind(&claims.sub)
     .fetch_all(&state.db)
     .await
     .map_err(|e| {
@@ -104,15 +120,14 @@ pub async fn my_list(
         ApiError::InternalError
     })?;
 
-    let mut collected: Vec<AudioWithMeta> = sqlx::query_as!(
-        AudioWithMeta,
+    let mut collected: Vec<AudioWithMeta> = sqlx::query_as::<_, AudioWithMeta>(
         r#"SELECT a.id, a.owner_id, a.title, a.description, a.filename,
-           a.size_bytes, a.duration_ms, a.is_public, a.created_at, false as "is_owned!"
-           FROM audios a
-           JOIN audio_collections ac ON ac.audio_id = a.id
-           WHERE ac.user_id = $1 ORDER BY a.created_at DESC"#,
-        claims.sub,
+        a.size_bytes, a.duration_ms, a.is_public, a.created_at, false as "is_owned!"
+        FROM audios a
+        JOIN audio_collections ac ON ac.audio_id = a.id
+        WHERE ac.user_id = $1 ORDER BY a.created_at DESC"#
     )
+    .bind(&claims.sub)
     .fetch_all(&state.db)
     .await
     .map_err(|e| {
@@ -131,31 +146,28 @@ pub async fn stream_url(
     Path(audio_id): Path<Uuid>,
     req_headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let audio = sqlx::query!(
-        "SELECT object_key, owner_id, is_public FROM audios WHERE id = $1",
-        audio_id
-    )
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| {
-        eprintln!("Error fetching audio: {:?}", e);
-        ApiError::InternalError
-    })?
-    .ok_or(ApiError::NotFound)?;
+    let audio: AudioRow = sqlx::query_as::<_, AudioRow>("SELECT object_key, owner_id, is_public FROM audios WHERE id = $1")
+        .bind(audio_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| {
+            eprintln!("Error fetching audio: {:?}", e);
+            ApiError::InternalError
+        })?
+        .ok_or(ApiError::NotFound)?;
 
     if audio.owner_id != claims.sub && !audio.is_public {
-        let in_collection = sqlx::query_scalar!(
-            "SELECT EXISTS(SELECT 1 FROM audio_collections WHERE user_id = $1 AND audio_id = $2)",
-            claims.sub,
-            audio_id,
+        let in_collection: bool = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM audio_collections WHERE user_id = $1 AND audio_id = $2)"
         )
+        .bind(&claims.sub)
+        .bind(audio_id)
         .fetch_one(&state.db)
         .await
         .map_err(|e| {
             eprintln!("Error checking audio collection: {:?}", e);
             ApiError::InternalError
-        })?
-        .unwrap_or(false);
+        })?;
 
         if !in_collection {
             return Err(ApiError::Forbidden);
@@ -211,8 +223,7 @@ pub async fn search(
         return Err(ApiError::InvalidInput("Search query is required".into()));
     }
 
-    let items = sqlx::query_as!(
-        AudioWithMeta,
+    let items: Vec<AudioWithMeta> = sqlx::query_as::<_, AudioWithMeta>(
         r#"
         SELECT
             id, owner_id, title, description, filename,
@@ -223,14 +234,16 @@ pub async fn search(
           AND to_tsvector('simple', title) @@ plainto_tsquery('simple', $1)
         ORDER BY created_at DESC
         LIMIT $2 OFFSET $3
-        "#,
-        params.q,
-        params.limit,
-        params.offset,
-    )
+        "#)
+    .bind(params.q)
+    .bind(params.limit)
+    .bind(params.offset)
     .fetch_all(&state.db)
     .await
-    .map_err(|_| ApiError::InternalError)?;
+    .map_err(|e| {
+        eprintln!("Error searching audio: {:?}", e);
+        ApiError::InternalError
+    })?;
 
     let total = items.len() as i64;
     Ok(Json(AudioListResponse { items, total }))
@@ -242,16 +255,16 @@ pub async fn update_privacy(
     Path(audio_id): Path<Uuid>,
     Json(body): Json<UpdatePrivacyRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let rows = sqlx::query!(
+    let rows = sqlx::query(
         r#"
         UPDATE audios
         SET is_public = $1, updated_at = now()
         WHERE id = $2 AND owner_id = $3
-        "#,
-        body.is_public,
-        audio_id,
-        claims.sub,
+        "#
     )
+    .bind(body.is_public)
+    .bind(audio_id)
+    .bind(&claims.sub)
     .execute(&state.db)
     .await
     .map_err(|_| ApiError::InternalError)?
@@ -269,10 +282,10 @@ pub async fn add_to_collection(
     Extension(claims): Extension<Claims>,
     Path(audio_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    let audio = sqlx::query!(
-        "SELECT owner_id, is_public FROM audios WHERE id = $1",
-        audio_id
+    let audio: AudioCheck = sqlx::query_as::<_, AudioCheck>(
+        "SELECT owner_id, is_public FROM audios WHERE id = $1"
     )
+    .bind(audio_id)
     .fetch_optional(&state.db)
     .await
     .map_err(|_| ApiError::InternalError)?
@@ -286,18 +299,21 @@ pub async fn add_to_collection(
         return Err(ApiError::Forbidden);
     }
 
-    sqlx::query!(
+    sqlx::query(
         r#"
         INSERT INTO audio_collections (user_id, audio_id)
         VALUES ($1, $2)
         ON CONFLICT DO NOTHING
-        "#,
-        claims.sub,
-        audio_id,
+        "#
     )
+    .bind(claims.sub)
+    .bind(audio_id)
     .execute(&state.db)
     .await
-    .map_err(|_| ApiError::InternalError)?;
+    .map_err(|e| {
+        eprintln!("Error adding audio to collection: {:?}", e);
+        ApiError::InternalError
+    })?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -307,11 +323,11 @@ pub async fn remove_from_collection(
     Extension(claims): Extension<Claims>,
     Path(audio_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    sqlx::query!(
-        "DELETE FROM audio_collections WHERE user_id = $1 AND audio_id = $2",
-        claims.sub,
-        audio_id,
+    sqlx::query(
+        "DELETE FROM audio_collections WHERE user_id = $1 AND audio_id = $2"
     )
+    .bind(claims.sub)
+    .bind(audio_id)
     .execute(&state.db)
     .await
     .map_err(|_| ApiError::InternalError)?;
@@ -324,11 +340,11 @@ pub async fn delete(
     Extension(claims): Extension<Claims>,
     Path(audio_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    let audio = sqlx::query!(
-        "DELETE FROM audios WHERE id = $1 AND owner_id = $2 RETURNING object_key",
-        audio_id,
-        claims.sub,
+    let audio: AudioDeleted = sqlx::query_as::<_, AudioDeleted>(
+        "DELETE FROM audios WHERE id = $1 AND owner_id = $2 RETURNING object_key"
     )
+    .bind(audio_id)
+    .bind(&claims.sub)
     .fetch_optional(&state.db)
     .await
     .map_err(|_| ApiError::InternalError)?
