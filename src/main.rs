@@ -7,8 +7,12 @@ mod middleware;
 mod models;
 mod services;
 
+use dotenv::dotenv;
+
 #[tokio::main]
 async fn main() {
+    dotenv().ok();
+
     let app = app::create_app().await;
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
