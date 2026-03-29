@@ -1,4 +1,5 @@
-use axum::{Router, extract::DefaultBodyLimit, middleware, routing::{delete, get, patch, post}};
+use axum::{Router, extract::DefaultBodyLimit, middleware, routing::{delete, get, patch, post}, http::Method};
+use tower_http::cors::CorsLayer;
 use std::sync::Arc;
 use crate::{handlers::{audio, auth_handler, health, users}, services::storage};
 use crate::config::{minio::init_minio, db::init_db, oauth::OAuthConfig, keycloak::KeycloakClient};
@@ -32,10 +33,16 @@ pub async fn create_app() -> Router {
         .route("/audio/{id}", delete(audio::delete))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
+    let cors = CorsLayer::new()
+        .allow_origin(tower_http::cors::Any)
+        .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE, Method::OPTIONS])
+        .allow_headers(tower_http::cors::Any);
+
     Router::new()
         .route("/ping.txt", get(health::health_check))
         .merge(public)
         .merge(protected)
+        .layer(cors)
         .layer(DefaultBodyLimit::max(1024*1024*1024))
         .with_state(state)
 }
